@@ -13,6 +13,18 @@ namespace pageview_processor_tests
     public class wikipedia_dumps_processor_should
     {
         [TestMethod]
+        public async Task cache_correctly()
+        {
+            var processor = new WikipediaDumpsProcessor(default, default);
+            await processor.ProcessAndGetResultsFilePath("20200203-010000", "20200203-020000");
+
+            WikipediaDumpsProcessor.Cache.Any().Should().BeTrue();
+            WikipediaDumpsProcessor.Cache.Count.Should().Be(2);
+
+            await processor.ProcessAndGetResultsFilePath("20200203-010000", "20200203-020000");
+        }
+
+        [TestMethod]
         public async Task write_ordered_results_to_a_file()
         {
             var firstSet = new PriorityQueue<string, int>();

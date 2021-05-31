@@ -18,7 +18,7 @@ namespace pageview_processor
         private readonly ILogger logger;
         private readonly HttpClient httpClient;
         private static Dictionary<string, HashSet<string>> blackList = new();
-        private static Dictionary<string, string> cache = new();
+        internal static Dictionary<string, string> Cache { get; } = new();
 
         public WikipediaDumpsProcessor(ILogger logger, HttpClient httpClient = null)
         {
@@ -26,29 +26,28 @@ namespace pageview_processor
             this.httpClient = httpClient ?? new HttpClient();
         }
 
-        //caching!
-        public async Task ProcessAndGetResultsFilePath(string from, string to)
+        public async Task<IEnumerable<string>> ProcessAndGetResultsFilePath(string dateFrom, string dateTo)
         {
-            var (isValid, dateFrom, dateTo) = DatesValidator.ValidateAndGet(FORMAT, from, to);
+            var (isValid, parsedDateFrom, parsedDateTo) = DatesValidator.ValidateAndGet(FORMAT, dateFrom, dateTo);
             if (!isValid) throw new Exception();
 
             if (!blackList.Any()) blackList = await BlackListOfWikipediaDumps.Get(logger, httpClient);
-            //blackList ??= await BlackListOfWikipediaDumps.Get(logger, httpClient);
 
             var datesToProcess = new List<DateTime>();
             var cachedPaths = new List<string>(); //prettify
-            for (var date = dateFrom; date <= dateTo; date = date.AddHours(1))
+            for (var date = parsedDateFrom; date <= parsedDateTo; date = date.AddHours(1))
             {
-                if (cache.TryGetValue(date.ToString(FORMAT), out var path)) cachedPaths.Add(path);
+                if (Cache.TryGetValue(date.ToString(FORMAT), out var path)) cachedPaths.Add(path);
                 else datesToProcess.Add(date);
             }
 
-            //get paths of all dates
             var dumpsLocalPath = await Download(datesToProcess);
-            await ConsumeAndReturnResults(dumpsLocalPath);
+            foreach (var (localPath, date) in dumpsLocalPath) Cache.Add(date, localPath);
+            cachedPaths.AddRange(await ConsumeAndReturnResults(dumpsLocalPath));
+
+            return cachedPaths;
         }
 
-        //shit using of IAsyncEnumerable
         internal async Task<IEnumerable<(string localPath, string date)>> Download(IEnumerable<DateTime> datesToProcess)
         {
             var result = new BlockingCollection<(string tempPath, string date)>();
@@ -121,7 +120,9 @@ namespace pageview_processor
 
         internal static async Task<string> WriteResultsToAFileAndGetPath(string date, Dictionary<string, PriorityQueue<string, int>> results)
         {
-            var path = @$"C:\labels\{date}";
+            if (!Directory.Exists("/dumps")) Directory.CreateDirectory("/dumps");
+
+            var path = @$"/dumps/{date}";
             var stringbuilder = new StringBuilder();
             foreach (var result in results.ToList())
             {
