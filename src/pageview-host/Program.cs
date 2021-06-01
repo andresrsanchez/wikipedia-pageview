@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+﻿using McMaster.Extensions.CommandLineUtils;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using pageview_processor;
@@ -11,42 +12,40 @@ namespace ConsoleApp2
 {
     class Program
     {
-        static async Task Main(string[] args)
+        static async Task Main(string[] args) => await CommandLineApplication.ExecuteAsync<Program>(args);
+
+        async Task OnExecuteAsync()
         {
-            var builder = new HostBuilder()
-                .ConfigureLogging((context, builder) =>
+            var services = new ServiceCollection()
+                .AddHttpClient()
+                .AddLogging(builder =>
                 {
-                    var logger = new LoggerConfiguration()
+                    builder.ClearProviders();
+                    builder.AddSerilog(new LoggerConfiguration()
                         .MinimumLevel.Information()
                         .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
                         .MinimumLevel.Override("System", LogEventLevel.Warning)
                         .WriteTo.Console()
-                        .CreateLogger();
-
-                    Log.Logger = logger;
-
-                    builder.ClearProviders();
-                    builder.AddSerilog(logger, dispose: true);
+                        .CreateLogger(), dispose: true);
                 })
-                .ConfigureServices((hostContext, services) =>
-                {
-                    services.AddHttpClient();
-                    services.AddTransient<WikipediaDumpsProcessor>();
-                }).UseConsoleLifetime();
-
-            var host = builder.Build();
+                .AddTransient<WikipediaDumpsProcessor>()
+                .BuildServiceProvider();
 
             try
             {
-                var myService = host.Services.GetRequiredService<WikipediaDumpsProcessor>();
-                await myService.ProcessAndGetResultsFilePath("20200101-000000", "20200101-090000");
+                var processor = services.GetRequiredService<WikipediaDumpsProcessor>();
+                await processor.ProcessAndGetResultsFilePath(DateFrom, DateTo);
             }
             catch (Exception ex)
             {
-                var logger = host.Services.GetRequiredService<ILogger<Program>>();
-
+                var logger = services.GetRequiredService<ILogger<Program>>();
                 logger.LogError(ex, "An error occurred.");
             }
         }
+
+        [Option(LongName = "dateFrom", ShortName = "df")]
+        public string DateFrom { get; }
+        [Option(LongName = "dateTo", ShortName = "dt")]
+        public string DateTo { get; }
     }
 }
