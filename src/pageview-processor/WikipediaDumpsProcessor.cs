@@ -15,17 +15,18 @@ namespace pageview_processor
     public class WikipediaDumpsProcessor
     {
         private const int CAPACITY = 25;
-        internal const string FORMAT = "yyyyMMdd-HHmmss";
+        internal const string FORMAT = "yyyyMMdd-HH0000";
         private const string PATH = "/dumps";
         private readonly ILogger logger;
+        private readonly IDumpsCache cache;
         private readonly HttpClient httpClient;
         private string resultsPath = PATH;
         private static Dictionary<string, HashSet<string>> blackList = new();
-        internal static Dictionary<string, string> Cache { get; } = new();
 
-        public WikipediaDumpsProcessor(ILogger<WikipediaDumpsProcessor> logger, IHttpClientFactory httpclientFactory = null)
+        public WikipediaDumpsProcessor(ILogger<WikipediaDumpsProcessor> logger, IDumpsCache cache, IHttpClientFactory httpclientFactory = null)
         {
             this.logger = logger;
+            this.cache = cache;
             this.httpClient = httpclientFactory?.CreateClient() ?? new HttpClient();
         }
 
@@ -34,7 +35,7 @@ namespace pageview_processor
             var (isValid, parsedDateFrom, parsedDateTo) = DatesValidator.ValidateAndGet(FORMAT, dateFrom, dateTo);
             if (!isValid) throw new Exception($"Invalid dates, cannot process from: {dateFrom} to: {dateTo}");
 
-            logger.LogInformation($"Start the processing from dateFrom: {dateFrom} to dateTo: {dateTo} and path: {resultsPath}");
+            logger.LogInformation($"Start processing from: {parsedDateFrom.ToString(FORMAT)} to: {parsedDateTo.ToString(FORMAT)} and path: {resultsPath}");
             if (!blackList.Any()) blackList = await BlackListOfWikipediaDumps.Get(logger, httpClient);
 
             this.resultsPath = resultsPath;
@@ -42,7 +43,7 @@ namespace pageview_processor
             var datesProcessed = new List<string>(); //prettify
             for (var date = parsedDateFrom; date <= parsedDateTo; date = date.AddHours(1))
             {
-                if (Cache.TryGetValue(date.ToString(FORMAT), out var path))
+                if (cache.TryGet(date.ToString(FORMAT), out var path))
                 {
                     logger.LogInformation($"Getting date: {date.ToString(FORMAT)} with path: {path} from cache");
                     datesProcessed.Add(path);
@@ -51,7 +52,7 @@ namespace pageview_processor
             }
 
             var dumpsLocalPath = await Download(datesToProcess);
-            foreach (var (localPath, date) in dumpsLocalPath) Cache.Add(date, localPath);
+            foreach (var (localPath, date) in dumpsLocalPath) cache.Add(date, localPath);
             datesProcessed.AddRange(await ConsumeAndReturnResults(dumpsLocalPath));
 
             return datesProcessed;
@@ -67,17 +68,16 @@ namespace pageview_processor
 
                 var url = @$"https://dumps.wikimedia.org/other/pageviews/{date.Year}/{date:yyyy-MM}/pageviews-{date.ToString(FORMAT)}.gz";
                 var response = await httpClient.GetAsync(url, cancellationToken);
-                if (!response.IsSuccessStatusCode) throw new Exception(@$"Error downloading date: {date.ToString(FORMAT)} 
-                    with error: {await response.Content.ReadAsStringAsync(cancellationToken)} and status code: {response.StatusCode}");
+                if (!response.IsSuccessStatusCode) 
+                    throw new Exception(@$"Error downloading date: {date.ToString(FORMAT)} with status code: {response.StatusCode}");
 
-                var fileToWriteTo = Path.GetTempFileName();// local system
+                var fileToWriteTo = Path.GetTempFileName();
                 {
                     await using var decompressedFileStream = File.Create(fileToWriteTo);
                     await using var responseContent = await response.Content.ReadAsStreamAsync(cancellationToken);
                     await using var decompressionStream = new GZipStream(responseContent, CompressionMode.Decompress);//review usings memory
                     decompressionStream.CopyTo(decompressedFileStream);
                 }
-
                 result.Add((fileToWriteTo, date.ToString(FORMAT)), cancellationToken);
 
                 logger.LogInformation($"Ending the download of date: {date.ToString(FORMAT)} in: {Math.Round(stopWatch.Elapsed.TotalSeconds, 2)} seconds");

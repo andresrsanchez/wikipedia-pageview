@@ -14,23 +14,26 @@ namespace pageview_processor_tests
     public class wikipedia_dumps_processor_should
     {
         private readonly WikipediaDumpsProcessor processor;
+        private readonly IDumpsCache cache;
+
         public wikipedia_dumps_processor_should()
         {
             var service = new ServiceCollection()
                 .AddHttpClient()
                 .AddLogging()
+                .AddTransient<IDumpsCache, SQLiteDumpsCache>()
                 .AddTransient<WikipediaDumpsProcessor>()
                 .BuildServiceProvider();
             processor = service.GetRequiredService<WikipediaDumpsProcessor>();
+            cache = service.GetRequiredService<IDumpsCache>();
         }
 
         [TestMethod]
-        public async Task cache_correctly()
+        public async Task cache_correctly()//do we need cache flush?
         {
             await processor.ProcessAndGetResultsFilePath("20200203-010000", "20200203-020000");
 
-            WikipediaDumpsProcessor.Cache.Any().Should().BeTrue();
-            WikipediaDumpsProcessor.Cache.Count.Should().Be(2);
+            cache.TryGet("20200203-010000", out var _).Should().BeTrue();
 
             await processor.ProcessAndGetResultsFilePath("20200203-010000", "20200203-020000");
         }

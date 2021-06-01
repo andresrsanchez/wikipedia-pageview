@@ -1,6 +1,5 @@
 ﻿using McMaster.Extensions.CommandLineUtils;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using pageview_processor;
 using Serilog;
@@ -28,6 +27,7 @@ namespace ConsoleApp2
                         .WriteTo.Console()
                         .CreateLogger(), dispose: true);
                 })
+                .AddTransient<IDumpsCache, SQLiteDumpsCache>()
                 .AddTransient<WikipediaDumpsProcessor>()
                 .BuildServiceProvider();
 

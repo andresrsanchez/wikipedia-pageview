@@ -2,7 +2,6 @@ using FluentAssertions;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using pageview_processor;
 using System;
-using System.Threading.Tasks;
 
 namespace pageview_processor_tests
 {
