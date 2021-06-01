@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using pageview_processor;
 using System;
@@ -12,10 +13,20 @@ namespace pageview_processor_tests
     [TestClass]
     public class wikipedia_dumps_processor_should
     {
+        private readonly WikipediaDumpsProcessor processor;
+        public wikipedia_dumps_processor_should()
+        {
+            var service = new ServiceCollection()
+                .AddHttpClient()
+                .AddLogging()
+                .AddTransient<WikipediaDumpsProcessor>()
+                .BuildServiceProvider();
+            processor = service.GetRequiredService<WikipediaDumpsProcessor>();
+        }
+
         [TestMethod]
         public async Task cache_correctly()
         {
-            var processor = new WikipediaDumpsProcessor(default, default);
             await processor.ProcessAndGetResultsFilePath("20200203-010000", "20200203-020000");
 
             WikipediaDumpsProcessor.Cache.Any().Should().BeTrue();
@@ -41,7 +52,7 @@ namespace pageview_processor_tests
                 {"ab", secondSet },
             };
 
-            var path = await WikipediaDumpsProcessor.WriteResultsToAFileAndGetPath("20200201-000000", results);
+            var path = await processor.WriteResultsToAFileAndGetPath("20200201-000000", results);
             var lines = await File.ReadAllLinesAsync(path);
 
             lines[0].Should().Be("aa.d Template:Annotate 3");
@@ -59,8 +70,7 @@ namespace pageview_processor_tests
                 new DateTime(2020, 01, 01, 02, 00, 00)
             };
 
-            var wikipediaDumpsProcessor = new WikipediaDumpsProcessor(default, default);
-            var downloadPaths = await wikipediaDumpsProcessor.Download(dates);
+            var downloadPaths = await processor.Download(dates);
 
             downloadPaths.Should().HaveCount(2);
 
@@ -77,10 +87,9 @@ namespace pageview_processor_tests
                 new DateTime(2020, 01, 01, 04, 00, 00)
             };
 
-            var wikipediaDumpsProcessor = new WikipediaDumpsProcessor(default, default);
-            var downloadPaths = await wikipediaDumpsProcessor.Download(dates);
+            var downloadPaths = await processor.Download(dates);
 
-            var resultsPath = (await wikipediaDumpsProcessor.ConsumeAndReturnResults(downloadPaths)).ToArray();
+            var resultsPath = (await processor.ConsumeAndReturnResults(downloadPaths)).ToArray();
 
             static void CheckFirstTwoLinesByFilePath(string path, string firstLine, string secondLine)
             {

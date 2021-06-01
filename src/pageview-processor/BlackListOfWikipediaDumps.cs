@@ -11,9 +11,9 @@ namespace pageview_processor
     {
         internal static async Task<Dictionary<string, HashSet<string>>> Get(ILogger logger, HttpClient httpClient)
         {
+            logger.LogInformation("Initializing blacklist");
             var response = await httpClient.GetAsync(@"https://s3.amazonaws.com/dd-interview-data/data_engineer/wikipedia/blacklist_domains_and_pages");
-            if (!response.IsSuccessStatusCode)
-                throw new Exception("");
+            if (!response.IsSuccessStatusCode) throw new Exception($"Error initializing blacklist: {await response.Content.ReadAsStringAsync()}");
 
             return Process(await response.Content.ReadAsStringAsync());
         }

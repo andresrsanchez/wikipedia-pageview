@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -15,47 +16,59 @@ namespace pageview_processor
     {
         private const int CAPACITY = 25;
         internal const string FORMAT = "yyyyMMdd-HHmmss";
+        private const string PATH = "/dumps";
         private readonly ILogger logger;
         private readonly HttpClient httpClient;
+        private string resultsPath = PATH;
         private static Dictionary<string, HashSet<string>> blackList = new();
         internal static Dictionary<string, string> Cache { get; } = new();
 
-        public WikipediaDumpsProcessor(ILogger logger, HttpClient httpClient = null)
+        public WikipediaDumpsProcessor(ILogger<WikipediaDumpsProcessor> logger, IHttpClientFactory httpclientFactory = null)
         {
             this.logger = logger;
-            this.httpClient = httpClient ?? new HttpClient();
+            this.httpClient = httpclientFactory?.CreateClient() ?? new HttpClient();
         }
 
-        public async Task<IEnumerable<string>> ProcessAndGetResultsFilePath(string dateFrom, string dateTo)
+        public async Task<IEnumerable<string>> ProcessAndGetResultsFilePath(string dateFrom, string dateTo, string resultsPath = PATH)
         {
             var (isValid, parsedDateFrom, parsedDateTo) = DatesValidator.ValidateAndGet(FORMAT, dateFrom, dateTo);
-            if (!isValid) throw new Exception();
+            if (!isValid) throw new Exception($"Invalid dates, cannot process from: {dateFrom} to: {dateTo}");
 
+            logger.LogInformation($"Start the processing from dateFrom: {dateFrom} to dateTo: {dateTo} and path: {resultsPath}");
             if (!blackList.Any()) blackList = await BlackListOfWikipediaDumps.Get(logger, httpClient);
 
+            this.resultsPath = resultsPath;
             var datesToProcess = new List<DateTime>();
-            var cachedPaths = new List<string>(); //prettify
+            var datesProcessed = new List<string>(); //prettify
             for (var date = parsedDateFrom; date <= parsedDateTo; date = date.AddHours(1))
             {
-                if (Cache.TryGetValue(date.ToString(FORMAT), out var path)) cachedPaths.Add(path);
+                if (Cache.TryGetValue(date.ToString(FORMAT), out var path))
+                {
+                    logger.LogInformation($"Getting date: {date.ToString(FORMAT)} with path: {path} from cache");
+                    datesProcessed.Add(path);
+                }
                 else datesToProcess.Add(date);
             }
 
             var dumpsLocalPath = await Download(datesToProcess);
             foreach (var (localPath, date) in dumpsLocalPath) Cache.Add(date, localPath);
-            cachedPaths.AddRange(await ConsumeAndReturnResults(dumpsLocalPath));
+            datesProcessed.AddRange(await ConsumeAndReturnResults(dumpsLocalPath));
 
-            return cachedPaths;
+            return datesProcessed;
         }
 
-        internal async Task<IEnumerable<(string localPath, string date)>> Download(IEnumerable<DateTime> datesToProcess)
+        internal async Task<IEnumerable<(string localPath, string date)>> Download(List<DateTime> datesToProcess)
         {
             var result = new BlockingCollection<(string tempPath, string date)>();
-            await Parallel.ForEachAsync(datesToProcess, new ParallelOptions { MaxDegreeOfParallelism = 2 }, async (date, cancellationToken) =>
+            await Parallel.ForEachAsync(datesToProcess, new ParallelOptions { MaxDegreeOfParallelism = 3 }, async (date, cancellationToken) =>
             {
+                var stopWatch = new Stopwatch(); stopWatch.Start();
+                logger.LogInformation($"Starting the download of date: {date.ToString(FORMAT)}");
+
                 var url = @$"https://dumps.wikimedia.org/other/pageviews/{date.Year}/{date:yyyy-MM}/pageviews-{date.ToString(FORMAT)}.gz";
                 var response = await httpClient.GetAsync(url, cancellationToken);
-                if (!response.IsSuccessStatusCode) throw new Exception("");
+                if (!response.IsSuccessStatusCode) throw new Exception(@$"Error downloading date: {date.ToString(FORMAT)} 
+                    with error: {await response.Content.ReadAsStringAsync(cancellationToken)} and status code: {response.StatusCode}");
 
                 var fileToWriteTo = Path.GetTempFileName();// local system
                 {
@@ -66,6 +79,8 @@ namespace pageview_processor
                 }
 
                 result.Add((fileToWriteTo, date.ToString(FORMAT)), cancellationToken);
+
+                logger.LogInformation($"Ending the download of date: {date.ToString(FORMAT)} in: {Math.Round(stopWatch.Elapsed.TotalSeconds, 2)} seconds");
             });
 
             return result.ToList();
@@ -76,6 +91,8 @@ namespace pageview_processor
             var result = new List<string>();
             foreach (var (localPath, date) in paths)
             {
+                logger.LogInformation($"Start consuming file with localPath: {localPath} and date: {date}");//include times?
+
                 await using var fs = File.Open(localPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                 await using var bs = new BufferedStream(fs);
                 using var sr = new StreamReader(bs);
@@ -112,17 +129,20 @@ namespace pageview_processor
                     }
                 }
 
+                logger.LogInformation($"Ending file consumption");
                 result.Add(await WriteResultsToAFileAndGetPath(date, top));
             }
 
             return result;
         }
 
-        internal static async Task<string> WriteResultsToAFileAndGetPath(string date, Dictionary<string, PriorityQueue<string, int>> results)
+        internal async Task<string> WriteResultsToAFileAndGetPath(string date, Dictionary<string, PriorityQueue<string, int>> results)
         {
-            if (!Directory.Exists("/dumps")) Directory.CreateDirectory("/dumps");
+            logger.LogInformation($"Start writing result to a file with date: {date}");
 
-            var path = @$"/dumps/{date}";
+            if (!Directory.Exists(resultsPath)) Directory.CreateDirectory(resultsPath);
+
+            var path = @$"{resultsPath}/{date}";
             var stringbuilder = new StringBuilder();
             foreach (var result in results.ToList())
             {
@@ -134,9 +154,15 @@ namespace pageview_processor
                 foreach (var item in stack) stringbuilder.AppendLine(item);
             }
 
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(path))
+            {
+                logger.LogWarning($"The file with path: {path} already exists!");
+                File.Delete(path);
+            }
 
             await File.AppendAllTextAsync(path, stringbuilder.ToString());
+            logger.LogInformation($"Ending writing result to a file with date: {date} and path: {path}");
+
             return path;
         }
     }
