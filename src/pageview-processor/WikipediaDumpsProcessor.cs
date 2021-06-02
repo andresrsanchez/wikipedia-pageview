@@ -35,12 +35,13 @@ namespace pageview_processor
             var (isValid, parsedDateFrom, parsedDateTo) = DatesValidator.ValidateAndGet(FORMAT, dateFrom, dateTo);
             if (!isValid) throw new Exception($"Invalid dates, cannot process from: {dateFrom} to: {dateTo}");
 
+            var stopWatch = new Stopwatch(); stopWatch.Start();
             logger.LogInformation($"Start processing from: {parsedDateFrom.ToString(FORMAT)} to: {parsedDateTo.ToString(FORMAT)} and path: {resultsPath}");
             if (!blackList.Any()) blackList = await BlackListOfWikipediaDumps.Get(logger, httpClient);
 
             this.resultsPath = resultsPath;
             var datesToProcess = new List<DateTime>();
-            var datesProcessed = new List<string>(); //prettify
+            var datesProcessed = new List<string>();
             for (var date = parsedDateFrom; date <= parsedDateTo; date = date.AddHours(1))
             {
                 if (cache.TryGet(date.ToString(FORMAT), out var path))
@@ -55,12 +56,14 @@ namespace pageview_processor
             foreach (var (localPath, date) in dumpsLocalPath) cache.Add(date, localPath);
             datesProcessed.AddRange(await ConsumeAndReturnResults(dumpsLocalPath));
 
+            logger.LogInformation(@$"End processing from: {parsedDateFrom.ToString(FORMAT)} to: {parsedDateTo.ToString(FORMAT)} in: {Math.Round(stopWatch.Elapsed.TotalSeconds, 2)} seconds");
+
             return datesProcessed;
         }
 
         internal async Task<IEnumerable<(string localPath, string date)>> Download(List<DateTime> datesToProcess)
         {
-            var result = new BlockingCollection<(string tempPath, string date)>();
+            var result = new ConcurrentBag<(string tempPath, string date)>();
             await Parallel.ForEachAsync(datesToProcess, new ParallelOptions { MaxDegreeOfParallelism = 3 }, async (date, cancellationToken) =>
             {
                 var stopWatch = new Stopwatch(); stopWatch.Start();
@@ -68,9 +71,11 @@ namespace pageview_processor
 
                 var url = @$"https://dumps.wikimedia.org/other/pageviews/{date.Year}/{date:yyyy-MM}/pageviews-{date.ToString(FORMAT)}.gz";
                 var response = await httpClient.GetAsync(url, cancellationToken);
-                if (!response.IsSuccessStatusCode) 
-                    throw new Exception(@$"Error downloading date: {date.ToString(FORMAT)} with status code: {response.StatusCode}");
-
+                if (!response.IsSuccessStatusCode) //capture the exception
+                {
+                    logger.LogError(@$"Error downloading date: {date.ToString(FORMAT)} with status code: {response.StatusCode}");
+                    return;
+                }
                 var fileToWriteTo = Path.GetTempFileName();
                 {
                     await using var decompressedFileStream = File.Create(fileToWriteTo);
@@ -78,7 +83,7 @@ namespace pageview_processor
                     await using var decompressionStream = new GZipStream(responseContent, CompressionMode.Decompress);//review usings memory
                     decompressionStream.CopyTo(decompressedFileStream);
                 }
-                result.Add((fileToWriteTo, date.ToString(FORMAT)), cancellationToken);
+                result.Add((fileToWriteTo, date.ToString(FORMAT)));
 
                 logger.LogInformation($"Ending the download of date: {date.ToString(FORMAT)} in: {Math.Round(stopWatch.Elapsed.TotalSeconds, 2)} seconds");
             });
@@ -91,7 +96,7 @@ namespace pageview_processor
             var result = new List<string>();
             foreach (var (localPath, date) in paths)
             {
-                logger.LogInformation($"Start consuming file with localPath: {localPath} and date: {date}");//include times?
+                logger.LogInformation($"Start consuming file with localPath: {localPath} and date: {date}");
 
                 await using var fs = File.Open(localPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                 await using var bs = new BufferedStream(fs);

@@ -25,8 +25,10 @@ namespace ConsoleApp2
                         .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
                         .MinimumLevel.Override("System", LogEventLevel.Warning)
                         .WriteTo.Console()
+                        .WriteTo.ApplicationInsights(TelemetryConverter.Traces)
                         .CreateLogger(), dispose: true);
                 })
+                .AddApplicationInsightsTelemetryWorkerService()
                 .AddTransient<IDumpsCache, SQLiteDumpsCache>()
                 .AddTransient<WikipediaDumpsProcessor>()
                 .BuildServiceProvider();

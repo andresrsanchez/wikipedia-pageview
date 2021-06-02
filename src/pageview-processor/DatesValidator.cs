@@ -20,7 +20,7 @@ namespace pageview_processor
             var fromDate = Parse(from);
             var toDate = Parse(to);
 
-            return (fromDate.isValid && toDate.isValid, fromDate.date, toDate.date);
+            return (fromDate.isValid && toDate.isValid && (fromDate.date <= toDate.date), fromDate.date, toDate.date);
         }
     }
 }
