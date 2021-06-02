@@ -14,6 +14,7 @@ namespace pageview_processor
             logger.LogInformation("Initializing blacklist");
             var response = await httpClient.GetAsync(@"https://s3.amazonaws.com/dd-interview-data/data_engineer/wikipedia/blacklist_domains_and_pages");
             if (!response.IsSuccessStatusCode) throw new Exception($"Error initializing blacklist: {await response.Content.ReadAsStringAsync()}");
+            logger.LogInformation("Blacklist initialization ended");
 
             return Process(await response.Content.ReadAsStringAsync());
         }

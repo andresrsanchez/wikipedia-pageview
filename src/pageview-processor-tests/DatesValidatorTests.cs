@@ -12,7 +12,7 @@ namespace pageview_processor_tests
         public void fail_with_bad_dates()
         {
             (bool isValid, _, _) = DatesValidator.ValidateAndGet(
-                WikipediaDumpsProcessor.FORMAT, "20202020-000000", "20202120-000000");
+                WikipediaDumpsProcessor.FORMAT, "2020-20-27T00:00:00", "2020-21-27T00:00:00");
             isValid.Should().BeFalse();
         }
 

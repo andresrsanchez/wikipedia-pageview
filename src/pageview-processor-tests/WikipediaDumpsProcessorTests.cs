@@ -31,11 +31,11 @@ namespace pageview_processor_tests
         [TestMethod]
         public async Task cache_correctly()//do we need cache flush?
         {
-            await processor.ProcessAndGetResultsFilePath("20200203-010000", "20200203-020000");
+            await processor.ProcessAndGetResultsFilePath("2020-02-03T01:00:00", "2020-02-03T02:00:00");
 
             cache.TryGet("20200203-010000", out var _).Should().BeTrue();
 
-            await processor.ProcessAndGetResultsFilePath("20200203-010000", "20200203-020000");
+            await processor.ProcessAndGetResultsFilePath("2020-02-03T01:00:00", "2020-02-03T02:00:00");
         }
 
         [TestMethod]
@@ -107,9 +107,9 @@ namespace pageview_processor_tests
             downloadPaths.Should().HaveSameCount(resultsPath);
 
             var firstFile = resultsPath
-                .First(x => Path.GetFileName(x) == dates[0].ToString(WikipediaDumpsProcessor.FORMAT));
+                .First(x => Path.GetFileName(x) == dates[0].ToString(WikipediaDumpsProcessor.OLD_FORMAT));
             var secondFile = resultsPath
-               .First(x => Path.GetFileName(x) == dates[1].ToString(WikipediaDumpsProcessor.FORMAT));
+               .First(x => Path.GetFileName(x) == dates[1].ToString(WikipediaDumpsProcessor.OLD_FORMAT));
 
             CheckFirstTwoLinesByFilePath(firstFile, "aa Wikipedia:Community_Portal 3", "aa Main_Page 2");
             CheckFirstTwoLinesByFilePath(secondFile, "aa Main_Page 17", "aa Special:CiteThisPage 2");

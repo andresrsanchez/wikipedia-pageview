@@ -15,7 +15,8 @@ namespace pageview_processor
     public class WikipediaDumpsProcessor
     {
         private const int CAPACITY = 25;
-        internal const string FORMAT = "yyyyMMdd-HH0000";
+        internal const string OLD_FORMAT = "yyyyMMdd-HH0000"; //This format is to avoid issues with names on local filesystem
+        internal const string FORMAT = "yyyy-MM-ddTHH:00:00";
         private const string PATH = "/dumps";
         private readonly ILogger logger;
         private readonly IDumpsCache cache;
@@ -37,14 +38,14 @@ namespace pageview_processor
 
             var stopWatch = new Stopwatch(); stopWatch.Start();
             logger.LogInformation($"Start processing from: {parsedDateFrom.ToString(FORMAT)} to: {parsedDateTo.ToString(FORMAT)} and path: {resultsPath}");
-            if (!blackList.Any()) blackList = await BlackListOfWikipediaDumps.Get(logger, httpClient);
+            if (!blackList.Any()) blackList = await BlackListOfWikipediaDumps.Get(logger, httpClient); //Should we persist blacklist?
 
             this.resultsPath = resultsPath;
             var datesToProcess = new List<DateTime>();
             var datesProcessed = new List<string>();
             for (var date = parsedDateFrom; date <= parsedDateTo; date = date.AddHours(1))
             {
-                if (cache.TryGet(date.ToString(FORMAT), out var path))
+                if (cache.TryGet(date.ToString(OLD_FORMAT), out var path))
                 {
                     logger.LogInformation($"Getting date: {date.ToString(FORMAT)} with path: {path} from cache");
                     datesProcessed.Add(path);
@@ -61,6 +62,8 @@ namespace pageview_processor
             return datesProcessed;
         }
 
+        // MaxDegreeOfParallelism of 3 is because wikipedia dumps server returns a lot of 503 status code
+        // with a high number of concurrent http connections
         internal async Task<IEnumerable<(string localPath, string date)>> Download(List<DateTime> datesToProcess)
         {
             var result = new ConcurrentBag<(string tempPath, string date)>();
@@ -69,9 +72,9 @@ namespace pageview_processor
                 var stopWatch = new Stopwatch(); stopWatch.Start();
                 logger.LogInformation($"Starting the download of date: {date.ToString(FORMAT)}");
 
-                var url = @$"https://dumps.wikimedia.org/other/pageviews/{date.Year}/{date:yyyy-MM}/pageviews-{date.ToString(FORMAT)}.gz";
+                var url = @$"https://dumps.wikimedia.org/other/pageviews/{date.Year}/{date:yyyy-MM}/pageviews-{date.ToString(OLD_FORMAT)}.gz";
                 var response = await httpClient.GetAsync(url, cancellationToken);
-                if (!response.IsSuccessStatusCode) //capture the exception
+                if (!response.IsSuccessStatusCode)
                 {
                     logger.LogError(@$"Error downloading date: {date.ToString(FORMAT)} with status code: {response.StatusCode}");
                     return;
@@ -83,7 +86,7 @@ namespace pageview_processor
                     await using var decompressionStream = new GZipStream(responseContent, CompressionMode.Decompress);//review usings memory
                     decompressionStream.CopyTo(decompressedFileStream);
                 }
-                result.Add((fileToWriteTo, date.ToString(FORMAT)));
+                result.Add((fileToWriteTo, date.ToString(OLD_FORMAT)));
 
                 logger.LogInformation($"Ending the download of date: {date.ToString(FORMAT)} in: {Math.Round(stopWatch.Elapsed.TotalSeconds, 2)} seconds");
             });
@@ -127,6 +130,7 @@ namespace pageview_processor
                     }
                     else
                     {
+                        //Specify capacity to reduce the number of re-allocations
                         sortedValues = new PriorityQueue<string, int>(CAPACITY);
                         sortedValues.Enqueue(title, views);
 
@@ -154,6 +158,8 @@ namespace pageview_processor
                 var queue = result.Value;
                 var domain = result.Key;
 
+                //TODO: We need to address the invert of the whole priority queue problem 
+                //This is done to get the results in descending order
                 var stack = new Stack<string>();
                 while (queue.TryDequeue(out string item, out int priority)) stack.Push($"{domain} {item} {priority}");
                 foreach (var item in stack) stringbuilder.AppendLine(item);
