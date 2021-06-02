@@ -10,7 +10,7 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Build Docker image
-      run : docker build -t dumps ./src
+      run : docker build --target test -t dumps ./src
     - name: Run tests
       run : docker run --rm dumps
             

@@ -1,4 +1,5 @@
 ﻿using Microsoft.Data.Sqlite;
+using System.IO;
 
 namespace pageview_processor
 {
@@ -11,11 +12,14 @@ namespace pageview_processor
 
     public class SQLiteDumpsCache : IDumpsCache
     {
-        private readonly SqliteConnectionStringBuilder conn = new() { DataSource = "cache.db" };
+        const string FOLDER = "cache";
+        private readonly SqliteConnectionStringBuilder conn = new() { DataSource = Path.Combine(Directory.GetCurrentDirectory(), FOLDER, "cache.db") };
         public SQLiteDumpsCache() { Init(); }
 
         public void Init()
         {
+            if (!Directory.Exists(FOLDER)) Directory.CreateDirectory(FOLDER);
+
             using var connection = new SqliteConnection(conn.ConnectionString);
             connection.Open();
 

@@ -129,7 +129,7 @@ namespace pageview_processor
                     }
                 }
 
-                logger.LogInformation($"Ending file consumption");
+                logger.LogInformation($"Ending file consumption with date: {date}");
                 result.Add(await WriteResultsToAFileAndGetPath(date, top));
             }
 
