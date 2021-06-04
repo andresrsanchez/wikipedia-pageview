@@ -8,6 +8,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace pageview_processor
@@ -23,6 +24,7 @@ namespace pageview_processor
         private readonly HttpClient httpClient;
         private string resultsPath = PATH;
         private static Dictionary<string, HashSet<string>> blackList = new();
+        internal readonly Channel<(string localPath, string date)> channel = Channel.CreateUnbounded<(string localPath, string date)>();
 
         public WikipediaDumpsProcessor(ILogger<WikipediaDumpsProcessor> logger, IDumpsCache cache, IHttpClientFactory httpclientFactory = null)
         {
@@ -53,96 +55,107 @@ namespace pageview_processor
                 else datesToProcess.Add(date);
             }
 
-            var dumpsLocalPath = await Download(datesToProcess);
-            foreach (var (localPath, date) in dumpsLocalPath) cache.Add(date, localPath);
-            datesProcessed.AddRange(await ConsumeAndReturnResults(dumpsLocalPath));
+            var consumer = ConsumeAndReturnResults();
+            var producer = Download(datesToProcess);
+            await foreach (var path in consumer) { logger.LogInformation($"datesProcessed: {path}"); datesProcessed.Add(path); }
 
+            await producer;
+            
             logger.LogInformation(@$"End processing from: {parsedDateFrom.ToString(FORMAT)} to: {parsedDateTo.ToString(FORMAT)} in: {Math.Round(stopWatch.Elapsed.TotalSeconds, 2)} seconds");
 
             return datesProcessed;
         }
 
-        // MaxDegreeOfParallelism of 3 is because wikipedia dumps server returns a lot of 503 status code
+        // MaxDegreeOfParallelism of 5 is because wikipedia dumps server returns a lot of 503 status code
         // with a high number of concurrent http connections
-        internal async Task<IEnumerable<(string localPath, string date)>> Download(List<DateTime> datesToProcess)
+        internal async Task Download(List<DateTime> datesToProcess)
         {
-            var result = new ConcurrentBag<(string tempPath, string date)>();
-            await Parallel.ForEachAsync(datesToProcess, new ParallelOptions { MaxDegreeOfParallelism = 3 }, async (date, cancellationToken) =>
+            var exceptions = new ConcurrentQueue<Exception>();
+            await Parallel.ForEachAsync(datesToProcess, new ParallelOptions { MaxDegreeOfParallelism = 5 }, async (date, cancellationToken) =>
             {
-                var stopWatch = new Stopwatch(); stopWatch.Start();
-                logger.LogInformation($"Starting the download of date: {date.ToString(FORMAT)}");
-
-                var url = @$"https://dumps.wikimedia.org/other/pageviews/{date.Year}/{date:yyyy-MM}/pageviews-{date.ToString(OLD_FORMAT)}.gz";
-                var response = await httpClient.GetAsync(url, cancellationToken);
-                if (!response.IsSuccessStatusCode)
+                try
                 {
-                    logger.LogError(@$"Error downloading date: {date.ToString(FORMAT)} with status code: {response.StatusCode}");
-                    return;
-                }
-                var fileToWriteTo = Path.GetTempFileName();
-                {
-                    await using var decompressedFileStream = File.Create(fileToWriteTo);
-                    await using var responseContent = await response.Content.ReadAsStreamAsync(cancellationToken);
-                    await using var decompressionStream = new GZipStream(responseContent, CompressionMode.Decompress);//review usings memory
-                    decompressionStream.CopyTo(decompressedFileStream);
-                }
-                result.Add((fileToWriteTo, date.ToString(OLD_FORMAT)));
+                    var stopWatch = new Stopwatch(); stopWatch.Start();
+                    logger.LogInformation($"Starting the download of date: {date.ToString(FORMAT)}");
 
-                logger.LogInformation($"Ending the download of date: {date.ToString(FORMAT)} in: {Math.Round(stopWatch.Elapsed.TotalSeconds, 2)} seconds");
+                    var url = @$"https://dumps.wikimedia.org/other/pageviews/{date.Year}/{date:yyyy-MM}/pageviews-{date.ToString(OLD_FORMAT)}.gz";
+                    var response = await httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        logger.LogError(@$"Error downloading date: {date.ToString(FORMAT)} with status code: {response.StatusCode}");
+                        return;
+                    }
+                    var fileToWriteTo = Path.GetTempFileName();
+                    {
+                        await using var decompressedFileStream = File.Create(fileToWriteTo);
+                        await using var responseContent = await response.Content.ReadAsStreamAsync(cancellationToken);
+                        await using var decompressionStream = new GZipStream(responseContent, CompressionMode.Decompress);
+                        decompressionStream.CopyTo(decompressedFileStream);
+                    }
+                    await channel.Writer.WriteAsync((fileToWriteTo, date.ToString(OLD_FORMAT)), cancellationToken);
+
+                    logger.LogInformation($"Ending the download of date: {date.ToString(FORMAT)} in: {Math.Round(stopWatch.Elapsed.TotalSeconds, 2)} seconds");
+                }
+                catch (Exception ex)
+                {
+                    exceptions.Enqueue(ex);
+                }
             });
+            channel.Writer.Complete();
 
-            return result.ToList();
+            if (!exceptions.IsEmpty) throw new AggregateException(exceptions);
         }
 
-        internal async Task<IEnumerable<string>> ConsumeAndReturnResults(IEnumerable<(string localPath, string date)> paths)
+        internal async IAsyncEnumerable<string> ConsumeAndReturnResults()
         {
-            var result = new List<string>();
-            foreach (var (localPath, date) in paths)
+            while (await channel.Reader.WaitToReadAsync())
             {
-                logger.LogInformation($"Start consuming file with localPath: {localPath} and date: {date}");
-
-                await using var fs = File.Open(localPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                await using var bs = new BufferedStream(fs);
-                using var sr = new StreamReader(bs);
-                string line;
-
-                var top = new Dictionary<string, PriorityQueue<string, int>>();
-                while ((line = sr.ReadLine()) != null)
+                if (channel.Reader.TryRead(out (string localPath, string date) paths))
                 {
-                    var splittedLine = line.Split(' ');
-                    if (splittedLine.Length != 4) continue;
+                    var localPath = paths.localPath; var date = paths.date;
+                    logger.LogInformation($"Start consuming file with localPath: {localPath} and date: {date}");
 
-                    var domain = splittedLine[0]; var title = splittedLine[1];
+                    await using var fs = File.Open(localPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    await using var bs = new BufferedStream(fs);
+                    using var sr = new StreamReader(bs);
+                    string line;
 
-                    if (blackList.TryGetValue(domain, out var blackListOfTitles) && blackListOfTitles.Contains(title)) continue;
-
-                    var views = int.Parse(splittedLine[2]);
-
-                    if (top.TryGetValue(domain, out var sortedValues))
+                    var top = new Dictionary<string, PriorityQueue<string, int>>();
+                    while ((line = sr.ReadLine()) != null)
                     {
-                        if (sortedValues.Count < CAPACITY) sortedValues.Enqueue(title, views);
+                        var splittedLine = line.Split(' ');
+                        if (splittedLine.Length != 4) continue;
 
-                        else if (sortedValues.TryPeek(out var _, out var priority) && views > priority)
+                        var domain = splittedLine[0]; var title = splittedLine[1];
+
+                        if (blackList.TryGetValue(domain, out var blackListOfTitles) && blackListOfTitles.Contains(title)) continue;
+
+                        var views = int.Parse(splittedLine[2]);
+
+                        if (top.TryGetValue(domain, out var sortedValues))
                         {
-                            sortedValues.Dequeue();
+                            if (sortedValues.Count < CAPACITY) sortedValues.Enqueue(title, views);
+
+                            else if (sortedValues.TryPeek(out var _, out var priority) && views > priority)
+                            {
+                                sortedValues.Dequeue();
+                                sortedValues.Enqueue(title, views);
+                            }
+                        }
+                        else
+                        {
+                            //Specify capacity to reduce the number of re-allocations
+                            sortedValues = new PriorityQueue<string, int>(CAPACITY);
                             sortedValues.Enqueue(title, views);
+
+                            top.Add(domain, sortedValues);
                         }
                     }
-                    else
-                    {
-                        //Specify capacity to reduce the number of re-allocations
-                        sortedValues = new PriorityQueue<string, int>(CAPACITY);
-                        sortedValues.Enqueue(title, views);
 
-                        top.Add(domain, sortedValues);
-                    }
+                    logger.LogInformation($"Ending file consumption with date: {date}");
+                    yield return await WriteResultsToAFileAndGetPath(date, top);
                 }
-
-                logger.LogInformation($"Ending file consumption with date: {date}");
-                result.Add(await WriteResultsToAFileAndGetPath(date, top));
             }
-
-            return result;
         }
 
         internal async Task<string> WriteResultsToAFileAndGetPath(string date, Dictionary<string, PriorityQueue<string, int>> results)

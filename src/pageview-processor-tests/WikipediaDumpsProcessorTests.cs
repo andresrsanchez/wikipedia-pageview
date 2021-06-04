@@ -34,8 +34,6 @@ namespace pageview_processor_tests
             await processor.ProcessAndGetResultsFilePath("2020-02-03T01:00:00", "2020-02-03T02:00:00");
 
             cache.TryGet("20200203-010000", out var _).Should().BeTrue();
-
-            await processor.ProcessAndGetResultsFilePath("2020-02-03T01:00:00", "2020-02-03T02:00:00");
         }
 
         [TestMethod]
@@ -73,12 +71,8 @@ namespace pageview_processor_tests
                 new DateTime(2020, 01, 01, 02, 00, 00)
             };
 
-            var downloadPaths = await processor.Download(dates);
-
-            downloadPaths.Should().HaveCount(2);
-
-            foreach (var downloadPath in downloadPaths)
-                File.Exists(downloadPath.localPath).Should().BeTrue();
+            await processor.Download(dates);
+            processor.channel.Reader.Count.Should().Be(2);
         }
 
         [TestMethod]
@@ -90,9 +84,9 @@ namespace pageview_processor_tests
                 new DateTime(2020, 01, 01, 04, 00, 00)
             };
 
-            var downloadPaths = await processor.Download(dates);
-
-            var resultsPath = (await processor.ConsumeAndReturnResults(downloadPaths)).ToArray();
+            await processor.Download(dates);
+            
+            var resultsPath = await processor.ConsumeAndReturnResults().ToListAsync();
 
             static void CheckFirstTwoLinesByFilePath(string path, string firstLine, string secondLine)
             {
@@ -103,8 +97,6 @@ namespace pageview_processor_tests
                 firstLine.Should().Be(sr.ReadLine());
                 secondLine.Should().Be(secondLine);
             }
-
-            downloadPaths.Should().HaveSameCount(resultsPath);
 
             var firstFile = resultsPath
                 .First(x => Path.GetFileName(x) == dates[0].ToString(WikipediaDumpsProcessor.OLD_FORMAT));
