@@ -12,26 +12,52 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const CAPACITY = 25
 
 func main() {
-	valid, from, to := validateAndGet("yyyy-MM-ddTHH:00:00", "2020-01-01T01:00:00", "2020-01-02T02:00:00")
+	valid, from, to := validateAndGet("yyyy-MM-ddTHH:00:00", "2020-01-01T01:00:00", "2020-01-01T07:00:00")
 	if !valid {
 		panic(fmt.Errorf("there is an error in dateFrom: %s or dateTo: %s", from, to))
 	}
 
+	dir, err := ioutil.TempDir("", "")
+	check(err)
+
 	blackList := getBlackList()
-	path := download(from)
-	results := consumeFileAndReturnResults(path, blackList)
-	writeResultsToFile("20200101-000000", results)
+
+	ch := make(chan time.Time)
+	var wg sync.WaitGroup
+	wg.Add(3)
+	for i := 0; i < 3; i++ {
+		go func(ch <-chan time.Time) {
+			defer wg.Done()
+			for d := range ch {
+				path := download(dir, d)
+				results := consumeFileAndReturnResults(path, blackList)
+				writeResultsToFile(d.Format("20060102150000"), results)
+				// wg.Done()
+			}
+		}(ch)
+	}
+
+	for d := from; !d.After(to); d = d.Add(1 * time.Hour) {
+		ch <- d
+	}
+
+	close(ch)
+	wg.Wait()
+
+	err = os.RemoveAll(dir)
+	check(err)
 }
 
-func download(date time.Time) string {
-	url := fmt.Sprintf("https://dumps.wikimedia.org/other/pageviews/%v/%v/pageviews-%v-%s0000.gz",
-		date.Year(), date.String()[0:7], date.Format("20060102"), date.Format("15"))
+func download(dir string, date time.Time) string {
+	url := fmt.Sprintf("https://dumps.wikimedia.org/other/pageviews/%v/%v/pageviews-%s.gz",
+		date.Year(), date.String()[0:7], date.Format("20060102-150000"))
 	fmt.Println(url)
 	resp, err := http.Get(url)
 	if err == nil && resp.StatusCode != http.StatusOK {
@@ -40,18 +66,12 @@ func download(date time.Time) string {
 	check(err)
 	defer resp.Body.Close()
 
-	dir, err := ioutil.TempDir("", "")
-	check(err)
-
 	out, err := ioutil.TempFile(dir, "")
 	check(err)
 	fmt.Println(out.Name())
 
 	defer out.Close()
 	io.Copy(out, resp.Body)
-
-	// err = os.Remove(dir)
-	// check(err)
 
 	return out.Name()
 }
@@ -123,7 +143,6 @@ func writeResultsToFile(date string, results map[string]PriorityQueue) {
 			stack, result = stack.Pop()
 			fmt.Fprintf(&b, "%s \n", result)
 		}
-		fmt.Printf("processing domain: %s \n", k)
 	}
 
 	err = ioutil.WriteFile(fmt.Sprintf("/dumps/%s", date), []byte(b.String()), 0644)
